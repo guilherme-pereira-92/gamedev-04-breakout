@@ -240,11 +240,49 @@ export class BreakoutScene extends Phaser.Scene {
 
     this.handleStateInput();
 
-    if (this.state === "playing") {
+    // Paddle se move em ready / playing / lifelost (player pode aimar antes de lançar).
+    if (this.state === "ready" || this.state === "playing" || this.state === "lifelost") {
       this.updatePaddle(delta);
+    }
+
+    // Bolas com flag "attached" seguem o paddle (ficam grudadas até ser lançadas).
+    this.syncAttachedBalls();
+
+    if (this.state === "playing") {
       this.updatePowerupExpirations(time);
+      this.unstickBalls();
       this.checkLostBalls();
     }
+  }
+
+  private syncAttachedBalls() {
+    this.balls.children.iterate((b) => {
+      const ball = b as Phaser.GameObjects.Rectangle;
+      if (ball.getData("attached")) {
+        ball.setPosition(this.paddle.x, PADDLE_Y - 16);
+        (ball.body as Phaser.Physics.Arcade.Body).updateFromGameObject();
+      }
+      return true;
+    });
+  }
+
+  // Rede de segurança: se uma bola não-attached estiver praticamente parada,
+  // significa que o engine travou ela entre tijolos. Dá um chute pra cima.
+  private unstickBalls() {
+    this.balls.children.iterate((b) => {
+      const ball = b as Phaser.GameObjects.Rectangle;
+      if (ball.getData("attached")) return true;
+      const body = ball.body as Phaser.Physics.Arcade.Body;
+      const speed = body.velocity.length();
+      if (speed < 40) {
+        const angle = Phaser.Math.FloatBetween(-Math.PI / 3, Math.PI / 3) - Math.PI / 2;
+        body.setVelocity(
+          Math.cos(angle) * this.currentBallSpeed,
+          Math.sin(angle) * this.currentBallSpeed,
+        );
+      }
+      return true;
+    });
   }
 
   // ---------- input ----------
@@ -343,7 +381,6 @@ export class BreakoutScene extends Phaser.Scene {
     const body = ball.body as Phaser.Physics.Arcade.Body;
     body.setBounce(1, 1);
     body.setCollideWorldBounds(true);
-    body.setCircle(BALL_SIZE / 2, (ball.width - BALL_SIZE) / 2, (ball.height - BALL_SIZE) / 2);
     body.setMaxSpeed(900);
     if (restPaddle) {
       ball.setData("attached", true);
@@ -370,8 +407,12 @@ export class BreakoutScene extends Phaser.Scene {
     const body = ball.body as Phaser.Physics.Arcade.Body;
     const offset = Phaser.Math.Clamp((ball.x - this.paddle.x) / (this.paddle.width / 2), -1, 1);
     const angle = offset * MAX_BOUNCE_ANGLE - Math.PI / 2;
-    const speed = body.velocity.length();
-    body.setVelocity(Math.cos(angle) * speed, Math.sin(angle) * speed);
+    // Sempre força a velocidade alvo — independente do que veio da física.
+    // Evita degradação progressiva e impede speed=0 após colisões em cadeia.
+    body.setVelocity(
+      Math.cos(angle) * this.currentBallSpeed,
+      Math.sin(angle) * this.currentBallSpeed,
+    );
     playTone(440, 60, "square", 0.10);
   }
 
@@ -403,14 +444,34 @@ export class BreakoutScene extends Phaser.Scene {
       playTone(330, 60, "square", 0.10);
     }
 
-    // garante velocidade mínima (Arcade pode reduzir após múltiplas colisões em sequência)
+    // Normaliza a velocidade pra evitar 2 problemas:
+    //   1. speed=0 após colisões em cadeia (target/0 = Infinity → NaN → bola trava)
+    //   2. componente vertical pequena demais → "ping-pong eterno" entre tijolos
     const ball = ballObj as Phaser.GameObjects.Rectangle;
     const body = ball.body as Phaser.Physics.Arcade.Body;
-    const speed = body.velocity.length();
+    let vx = body.velocity.x;
+    let vy = body.velocity.y;
+    const speed = Math.sqrt(vx * vx + vy * vy);
     const target = this.currentBallSpeed;
-    if (speed < target * 0.9) {
-      body.velocity.scale(target / speed);
+
+    if (speed < 1) {
+      // Encalhou — chuta pra cima.
+      vx = 0;
+      vy = -target;
+    } else {
+      // Normaliza pra velocidade alvo.
+      vx = (vx / speed) * target;
+      vy = (vy / speed) * target;
+      // Anti-stuck horizontal: força componente vertical mínima de 18% do speed.
+      const minVy = target * 0.18;
+      if (Math.abs(vy) < minVy) {
+        vy = (vy < 0 ? -1 : 1) * minVy;
+        const newSpeed = Math.sqrt(vx * vx + vy * vy);
+        vx = (vx / newSpeed) * target;
+        vy = (vy / newSpeed) * target;
+      }
     }
+    body.setVelocity(vx, vy);
   }
 
   private onPowerupCaught(_paddleObj: unknown, powerupObj: unknown) {
