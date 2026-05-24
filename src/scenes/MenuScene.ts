@@ -94,6 +94,19 @@ export class MenuScene extends Phaser.Scene {
     kb.on("keydown", unlockAudio);
 
     this.refreshHighlight();
+
+    // Auto-start via URL param (?autostart=1&phase=1) — usado pelos testes
+    // automatizados. No game normal, parametros sao ignorados.
+    const params = new URLSearchParams(window.location.search);
+    if (params.has("autostart")) {
+      const phase = Number(params.get("phase") ?? "1");
+      this.time.delayedCall(50, () => {
+        this.scene.start("breakout", {
+          mode: "campaign",
+          phase: Math.max(1, Math.min(5, phase)),
+        });
+      });
+    }
   }
 
   update() {

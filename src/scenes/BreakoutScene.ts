@@ -26,7 +26,7 @@ const BRICK_AREA_LEFT = (WIDTH - (BRICK_COLS * (BRICK_W + BRICK_GAP) - BRICK_GAP
 const POWERUP_W = 28;
 const POWERUP_H = 18;
 const POWERUP_FALL_SPEED = 180;
-const POWERUP_CHANCE = 0.22;
+const POWERUP_CHANCE = 0.12;
 const POWERUP_DURATION_MS = 8000;
 
 const STARTING_LIVES = 3;
@@ -131,6 +131,7 @@ export class BreakoutScene extends Phaser.Scene {
   private currentBallSpeed = BALL_BASE_SPEED;
   private slowEndAt = 0;
   private wideEndAt = 0;
+  private lastBrickBreakAt = 0;
 
   private scoreText!: Phaser.GameObjects.Text;
   private livesText!: Phaser.GameObjects.Text;
@@ -201,7 +202,9 @@ export class BreakoutScene extends Phaser.Scene {
     });
 
     this.physics.world.setBounds(0, 0, WIDTH, HEIGHT);
-    this.physics.world.checkCollision.down = false; // bola pode sair pelo bottom
+    // NÃO uso setCollideWorldBounds na bola — bounce manual em bounceBallsOffWalls
+    // é mais previsível e bulletproof. Phaser arcade pode falhar com balls rápidas
+    // batendo em tijolos perto da parede ao mesmo tempo.
 
     this.buildLevel();
     this.spawnBall(true);
@@ -227,6 +230,27 @@ export class BreakoutScene extends Phaser.Scene {
     };
 
     this.showReadyOverlay();
+
+    // Debug hook — Playwright lê/escreve estado via window.__breakout pra teste.
+    // Não impacta gameplay; só atribui referências.
+    (window as unknown as { __breakout?: unknown }).__breakout = {
+      scene: this,
+      getState: () => {
+        const ball = this.balls.getChildren()[0] as Phaser.GameObjects.Rectangle | undefined;
+        const body = ball?.body as Phaser.Physics.Arcade.Body | undefined;
+        return {
+          state: this.state,
+          paddle: { x: this.paddle.x, y: this.paddle.y, w: this.paddle.width },
+          ball: ball && body
+            ? { x: ball.x, y: ball.y, vx: body.velocity.x, vy: body.velocity.y, attached: ball.getData("attached") }
+            : null,
+          ballCount: this.balls.children.size,
+          score: this.score,
+          lives: this.lives,
+          bricks: this.brickCount,
+        };
+      },
+    };
   }
 
   update(time: number, delta: number) {
@@ -250,9 +274,47 @@ export class BreakoutScene extends Phaser.Scene {
 
     if (this.state === "playing") {
       this.updatePowerupExpirations(time);
+      this.bounceBallsOffWalls();
       this.unstickBalls();
       this.checkLostBalls();
     }
+  }
+
+  // Bounce manual da bola nas paredes top/left/right. Bottom é livre (ball cai).
+  // Mais robusto que setCollideWorldBounds — não depende da timeline interna
+  // do engine, sempre garante position clamp + velocity reflect.
+  private bounceBallsOffWalls() {
+    const halfBall = BALL_SIZE / 2;
+    this.balls.children.iterate((b) => {
+      const ball = b as Phaser.GameObjects.Rectangle;
+      if (ball.getData("attached")) return true;
+      const body = ball.body as Phaser.Physics.Arcade.Body;
+
+      let bounced = false;
+
+      // left wall
+      if (ball.x - halfBall < 0) {
+        ball.x = halfBall;
+        body.velocity.x = Math.abs(body.velocity.x);
+        bounced = true;
+      } else if (ball.x + halfBall > WIDTH) {
+        ball.x = WIDTH - halfBall;
+        body.velocity.x = -Math.abs(body.velocity.x);
+        bounced = true;
+      }
+
+      // top wall (bottom é livre — bola cai = perde vida)
+      if (ball.y - halfBall < 0) {
+        ball.y = halfBall;
+        body.velocity.y = Math.abs(body.velocity.y);
+        bounced = true;
+      }
+
+      if (bounced) {
+        body.updateFromGameObject();
+      }
+      return true;
+    });
   }
 
   private syncAttachedBalls() {
@@ -266,13 +328,28 @@ export class BreakoutScene extends Phaser.Scene {
     });
   }
 
-  // Rede de segurança: se uma bola não-attached estiver praticamente parada,
-  // significa que o engine travou ela entre tijolos. Dá um chute pra cima.
+  // Rede de segurança para bolas:
+  //  - escaparam da área de jogo (NaN, tunneling) → teleporta pro paddle
+  //  - travadas com velocity quase-zero → chuta pra cima
+  //  - andando quase-puramente horizontal por muito tempo → inclina um pouco
+  // Só roda em "playing"; bolas attached são ignoradas.
   private unstickBalls() {
     this.balls.children.iterate((b) => {
       const ball = b as Phaser.GameObjects.Rectangle;
       if (ball.getData("attached")) return true;
       const body = ball.body as Phaser.Physics.Arcade.Body;
+
+      const insane = !Number.isFinite(ball.x) || !Number.isFinite(ball.y)
+                  || !Number.isFinite(body.velocity.x) || !Number.isFinite(body.velocity.y);
+      const escaped = ball.x < -8 || ball.x > WIDTH + 8 || ball.y < -8;
+
+      if (insane || escaped) {
+        // teleporta pro topo do paddle e lança pra cima
+        body.reset(this.paddle.x, PADDLE_Y - 20);
+        body.setVelocity(0, -this.currentBallSpeed);
+        return true;
+      }
+
       const speed = body.velocity.length();
       if (speed < 40) {
         const angle = Phaser.Math.FloatBetween(-Math.PI / 3, Math.PI / 3) - Math.PI / 2;
@@ -280,9 +357,39 @@ export class BreakoutScene extends Phaser.Scene {
           Math.cos(angle) * this.currentBallSpeed,
           Math.sin(angle) * this.currentBallSpeed,
         );
+        return true;
+      }
+
+      // Anti ping-pong horizontal: se |vy| < 6% do speed (ângulo < ~3.5° da
+      // horizontal), inclina pra reintroduzir movimento vertical mantendo o
+      // sinal de vy (não muda direção). Só vai disparar em casos extremos.
+      if (Math.abs(body.velocity.y) < speed * 0.06) {
+        const sign = body.velocity.y >= 0 ? 1 : -1;
+        const newVy = sign * speed * 0.18;
+        const newSpeed = Math.sqrt(body.velocity.x * body.velocity.x + newVy * newVy);
+        const k = this.currentBallSpeed / newSpeed;
+        body.setVelocity(body.velocity.x * k, newVy * k);
       }
       return true;
     });
+
+    // Detector de "sem progresso": se nenhum tijolo quebrou em 6s durante
+    // playing, a bola está num loop preso (canto da tela, corredor vazio, etc.).
+    // Teleporta pro centro e relança em direção aleatória pra cima.
+    if (this.state === "playing" && this.lastBrickBreakAt > 0
+        && this.time.now - this.lastBrickBreakAt > 6000) {
+      const ball = this.balls.getChildren()[0] as Phaser.GameObjects.Rectangle | undefined;
+      if (ball && !ball.getData("attached")) {
+        const body = ball.body as Phaser.Physics.Arcade.Body;
+        body.reset(WIDTH / 2, HEIGHT / 2);
+        const angle = Phaser.Math.FloatBetween(-Math.PI / 3, Math.PI / 3) - Math.PI / 2;
+        body.setVelocity(
+          Math.cos(angle) * this.currentBallSpeed,
+          Math.sin(angle) * this.currentBallSpeed,
+        );
+        this.lastBrickBreakAt = this.time.now;
+      }
+    }
   }
 
   // ---------- input ----------
@@ -380,8 +487,8 @@ export class BreakoutScene extends Phaser.Scene {
     this.physics.add.existing(ball);
     const body = ball.body as Phaser.Physics.Arcade.Body;
     body.setBounce(1, 1);
-    body.setCollideWorldBounds(true);
-    body.setMaxSpeed(900);
+    body.setMaxSpeed(500);
+    // NÃO setCollideWorldBounds — bounce manual em bounceBallsOffWalls.
     if (restPaddle) {
       ball.setData("attached", true);
     }
@@ -398,6 +505,7 @@ export class BreakoutScene extends Phaser.Scene {
       body.setVelocity(Math.cos(angle) * this.currentBallSpeed, Math.sin(angle) * this.currentBallSpeed);
       return true;
     });
+    this.lastBrickBreakAt = this.time.now;
   }
 
   // ---------- collisions ----------
@@ -405,10 +513,11 @@ export class BreakoutScene extends Phaser.Scene {
   private onPaddleHit(ballObj: unknown, _paddleObj: unknown) {
     const ball = ballObj as Phaser.GameObjects.Rectangle;
     const body = ball.body as Phaser.Physics.Arcade.Body;
+    // NaN guard — não processa bola corrompida, deixa unstickBalls limpar.
+    if (!Number.isFinite(ball.x) || !Number.isFinite(ball.y)) return;
+
     const offset = Phaser.Math.Clamp((ball.x - this.paddle.x) / (this.paddle.width / 2), -1, 1);
     const angle = offset * MAX_BOUNCE_ANGLE - Math.PI / 2;
-    // Sempre força a velocidade alvo — independente do que veio da física.
-    // Evita degradação progressiva e impede speed=0 após colisões em cadeia.
     body.setVelocity(
       Math.cos(angle) * this.currentBallSpeed,
       Math.sin(angle) * this.currentBallSpeed,
@@ -417,6 +526,16 @@ export class BreakoutScene extends Phaser.Scene {
   }
 
   private onBrickHit(ballObj: unknown, brickObj: unknown) {
+    const ball = ballObj as Phaser.GameObjects.Rectangle;
+    // NaN guard — se a bola corrompeu, não destrua tijolos (evita "atravessa
+    // todos os blocos de uma vez"). Apenas reseta a bola e retorna.
+    if (!Number.isFinite(ball.x) || !Number.isFinite(ball.y)) {
+      const body = ball.body as Phaser.Physics.Arcade.Body;
+      body.reset(this.paddle.x, PADDLE_Y - 20);
+      body.setVelocity(0, -this.currentBallSpeed);
+      return;
+    }
+
     const brick = brickObj as Phaser.GameObjects.Rectangle & { getData: (k: string) => unknown };
     const indestructible = brick.getData("indestructible") as boolean;
     if (indestructible) {
@@ -431,6 +550,7 @@ export class BreakoutScene extends Phaser.Scene {
     if (hp <= 0) {
       this.score += SCORE_PER_BRICK;
       this.brickCount--;
+      this.lastBrickBreakAt = this.time.now;
       this.refreshChrome();
       this.particles.emitParticleAt(brick.x, brick.y, 10);
       playTone(660, 80, "triangle", 0.12);
@@ -439,39 +559,28 @@ export class BreakoutScene extends Phaser.Scene {
 
       if (this.brickCount <= 0) this.levelCleared();
     } else {
+      this.lastBrickBreakAt = this.time.now; // bater num duro também conta como progresso
       // visualizou batida — engrossa borda
       brick.setStrokeStyle(1.5, COLOR_HEX.accent, 1);
       playTone(330, 60, "square", 0.10);
     }
 
-    // Normaliza a velocidade pra evitar 2 problemas:
-    //   1. speed=0 após colisões em cadeia (target/0 = Infinity → NaN → bola trava)
-    //   2. componente vertical pequena demais → "ping-pong eterno" entre tijolos
-    const ball = ballObj as Phaser.GameObjects.Rectangle;
+    // Normaliza só a magnitude da velocidade pra evitar speed=0 (NaN) ou
+    // degradação progressiva. PRESERVA a direção que a física calculou —
+    // anti-stuck horizontal fica em unstickBalls, que roda só quando necessário.
     const body = ball.body as Phaser.Physics.Arcade.Body;
-    let vx = body.velocity.x;
-    let vy = body.velocity.y;
+    const vx = body.velocity.x;
+    const vy = body.velocity.y;
     const speed = Math.sqrt(vx * vx + vy * vy);
     const target = this.currentBallSpeed;
 
     if (speed < 1) {
-      // Encalhou — chuta pra cima.
-      vx = 0;
-      vy = -target;
+      // Encalhou (velocity zerou após múltiplas colisões no mesmo frame).
+      body.setVelocity(0, -target);
     } else {
-      // Normaliza pra velocidade alvo.
-      vx = (vx / speed) * target;
-      vy = (vy / speed) * target;
-      // Anti-stuck horizontal: força componente vertical mínima de 18% do speed.
-      const minVy = target * 0.18;
-      if (Math.abs(vy) < minVy) {
-        vy = (vy < 0 ? -1 : 1) * minVy;
-        const newSpeed = Math.sqrt(vx * vx + vy * vy);
-        vx = (vx / newSpeed) * target;
-        vy = (vy / newSpeed) * target;
-      }
+      const k = target / speed;
+      body.setVelocity(vx * k, vy * k);
     }
-    body.setVelocity(vx, vy);
   }
 
   private onPowerupCaught(_paddleObj: unknown, powerupObj: unknown) {
