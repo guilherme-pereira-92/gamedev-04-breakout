@@ -479,9 +479,12 @@ export class BreakoutScene extends Phaser.Scene {
     const ball = this.add.rectangle(WIDTH / 2, PADDLE_Y - 16, BALL_SIZE, BALL_SIZE, COLOR_HEX.accent);
     this.physics.add.existing(ball);
     const body = ball.body as Phaser.Physics.Arcade.Body;
-    body.setBounce(1, 1);
+    // setBounce(0) → Arcade não tenta refletir velocity automaticamente.
+    // Toda reflexão é manual nos callbacks (canonical Breakout — research-based).
+    // Isso evita o bug "ball goes opposite of paddle motion" que vinha do
+    // relative-velocity reflection do Arcade.
+    body.setBounce(0, 0);
     body.setMaxSpeed(500);
-    // NÃO setCollideWorldBounds — bounce manual em bounceBallsOffWalls.
     if (restPaddle) {
       ball.setData("attached", true);
     }
@@ -509,29 +512,24 @@ export class BreakoutScene extends Phaser.Scene {
 
     const target = this.currentBallSpeed;
 
-    // Direção é determinada por DUAS coisas:
-    //   1. Posição de impacto no paddle (Pong classic, 35% do peso)
-    //   2. Intent do jogador (qual tecla está pressionando, 65% do peso)
-    // Intent prioritário porque é o que o player TENTA fazer — sem isso, mover
-    // paddle pra direita podia gerar offset negativo (paddle passa por baixo da
-    // bola), e a bola ia esquerda contrariando o player.
-    const intent =
-      this.keys.RIGHT.isDown || this.keys.D.isDown ? 1 :
-      this.keys.LEFT.isDown  || this.keys.A.isDown ? -1 : 0;
-
+    // Posição do impacto no paddle determina o ângulo base (Pong/Breakout
+    // classic). Player intent (tecla pressionada) é um BIAS suave: adiciona
+    // ±0.5 ao offset, sempre push a ball na direção do player. Evita o bug
+    // "paddle move pra direita, bola vai esquerda" sem quebrar a previsibilidade.
     const positionOffset = Phaser.Math.Clamp(
       (ball.x - this.paddle.x) / (this.paddle.width / 2), -1, 1,
     );
 
+    const intent =
+      this.keys.RIGHT.isDown || this.keys.D.isDown ? 1 :
+      this.keys.LEFT.isDown  || this.keys.A.isDown ? -1 : 0;
+
     const effectiveOffset = intent !== 0
-      ? Phaser.Math.Clamp(positionOffset * 0.35 + intent * 0.65, -1, 1)
+      ? Phaser.Math.Clamp(positionOffset + intent * 0.5, -1, 1)
       : positionOffset;
 
     const angle = effectiveOffset * MAX_BOUNCE_ANGLE;
-    const vx = Math.sin(angle) * target;
-    const vy = -Math.cos(angle) * target;
-
-    body.setVelocity(vx, vy);
+    body.setVelocity(Math.sin(angle) * target, -Math.cos(angle) * target);
 
     this.playPaddleHitFeedback(ball.x);
   }
@@ -561,8 +559,6 @@ export class BreakoutScene extends Phaser.Scene {
 
   private onBrickHit(ballObj: unknown, brickObj: unknown) {
     const ball = ballObj as Phaser.GameObjects.Rectangle;
-    // NaN guard — se a bola corrompeu, não destrua tijolos (evita "atravessa
-    // todos os blocos de uma vez"). Apenas reseta a bola e retorna.
     if (!Number.isFinite(ball.x) || !Number.isFinite(ball.y)) {
       const body = ball.body as Phaser.Physics.Arcade.Body;
       body.reset(this.paddle.x, PADDLE_Y - 20);
@@ -572,59 +568,88 @@ export class BreakoutScene extends Phaser.Scene {
 
     const brick = brickObj as Phaser.GameObjects.Rectangle & { getData: (k: string) => unknown };
     const indestructible = brick.getData("indestructible") as boolean;
-    if (indestructible) {
+
+    // 1. SEMPRE processa o tijolo (decrementa hp, destrói) — permite chains.
+    if (!indestructible) {
+      const hp = (brick.getData("hp") as number) - 1;
+      brick.setData("hp", hp);
+
+      if (hp <= 0) {
+        this.score += SCORE_PER_BRICK;
+        this.brickCount--;
+        this.refreshChrome();
+        this.particles.emitParticleAt(brick.x, brick.y, 12);
+        playTone(660, 80, "triangle", 0.12);
+        this.maybeSpawnPowerup(brick.x, brick.y);
+        this.spawnBrickGhost(brick.x, brick.y, brick.width, brick.height);
+        brick.destroy();
+
+        if (this.brickCount <= 0) this.levelCleared();
+      } else {
+        brick.setStrokeStyle(1.5, COLOR_HEX.accent, 1);
+        playTone(330, 60, "square", 0.10);
+      }
+    } else {
       playTone(220, 60, "square", 0.10);
       this.cameras.main.shake(40, 0.002);
-      return;
     }
 
-    let hp = (brick.getData("hp") as number) - 1;
-    brick.setData("hp", hp);
+    // 2. Reflete velocity APENAS UMA VEZ POR FRAME.
+    //    Bola sandwiched entre 2 tijolos colidiria 2x no mesmo step, refletindo
+    //    duas vezes e fazendo 180° (parecia "random direction change").
+    const frame = this.game.loop.frame;
+    const lastReflectFrame = (ball.getData("lastBrickFrame") as number | undefined) ?? -1;
+    if (lastReflectFrame === frame) return;
+    ball.setData("lastBrickFrame", frame);
 
-    if (hp <= 0) {
-      this.score += SCORE_PER_BRICK;
-      this.brickCount--;
-      this.refreshChrome();
-      this.particles.emitParticleAt(brick.x, brick.y, 12);
-      playTone(660, 80, "triangle", 0.12);
-      this.maybeSpawnPowerup(brick.x, brick.y);
-      this.spawnBrickGhost(brick.x, brick.y, brick.width, brick.height);
-      brick.destroy();
+    // 3. Reflexão CANONICAL: detecta eixo de menor overlap, inverte só nele.
+    this.reflectBallOffBrick(ball, brick);
+  }
 
-      if (this.brickCount <= 0) this.levelCleared();
-    } else {
-      brick.setStrokeStyle(1.5, COLOR_HEX.accent, 1);
-      playTone(330, 60, "square", 0.10);
-    }
-
-    // Normaliza magnitude pro target speed + garante vy mínimo (10° da horizontal).
-    // Correção PONTUAL no momento do brick hit (não recorre por frame), evita
-    // o ball ficar grudado horizontal entre fileiras de tijolos. Sem isso, o
-    // Arcade pode resultar em vy~0 após colisão tangencial.
+  // Reflexão canônica AABB: detecta de qual lado a bola bateu pelo eixo de
+  // menor overlap, inverte só a componente nesse eixo. Depois normaliza pro
+  // target speed e clampa |vy| pra não ficar horizontal preso.
+  private reflectBallOffBrick(
+    ball: Phaser.GameObjects.Rectangle,
+    brick: Phaser.GameObjects.Rectangle,
+  ) {
     const body = ball.body as Phaser.Physics.Arcade.Body;
-    const vx = body.velocity.x;
-    const vy = body.velocity.y;
-    const speed = Math.sqrt(vx * vx + vy * vy);
     const target = this.currentBallSpeed;
 
+    // Calcula overlap em cada eixo no momento da colisão.
+    const overlapX = (ball.width + brick.width) / 2 - Math.abs(ball.x - brick.x);
+    const overlapY = (ball.height + brick.height) / 2 - Math.abs(ball.y - brick.y);
+
+    let vx = body.velocity.x;
+    let vy = body.velocity.y;
+
+    if (overlapX < overlapY) {
+      // Bateu lateral (esquerda ou direita do tijolo): inverte x.
+      vx = -Math.abs(vx) * Math.sign(ball.x - brick.x);
+    } else {
+      // Bateu top/bottom: inverte y.
+      vy = -Math.abs(vy) * Math.sign(ball.y - brick.y);
+    }
+
+    // Normaliza pro target speed
+    let speed = Math.sqrt(vx * vx + vy * vy);
     if (speed < 1) {
       body.setVelocity(0, -target);
       return;
     }
+    vx = (vx / speed) * target;
+    vy = (vy / speed) * target;
 
-    let finalVx = (vx / speed) * target;
-    let finalVy = (vy / speed) * target;
-    const minVyAbs = target * 0.18; // 18% → ~10° acima/abaixo da horizontal
-
-    if (Math.abs(finalVy) < minVyAbs) {
-      // Preserva sign de vy (se vy=0, vai pra cima — ball deveria subir após hit)
-      finalVy = (finalVy < 0 ? -1 : 1) * minVyAbs;
-      // Recalcula vx pra manter speed = target
-      const remaining = Math.sqrt(Math.max(0, target * target - finalVy * finalVy));
-      finalVx = (finalVx >= 0 ? 1 : -1) * remaining;
+    // Clamp |vy| >= 20% do speed (impede stuck horizontal)
+    const minVyAbs = target * 0.2;
+    if (Math.abs(vy) < minVyAbs) {
+      vy = (vy < 0 ? -1 : 1) * minVyAbs;
+      if (vy === 0) vy = -minVyAbs;
+      const remaining = Math.sqrt(Math.max(0, target * target - vy * vy));
+      vx = (vx >= 0 ? 1 : -1) * remaining;
     }
 
-    body.setVelocity(finalVx, finalVy);
+    body.setVelocity(vx, vy);
   }
 
   // Ghost: retângulo branco que fica no lugar do tijolo destruído e fade out
