@@ -9,16 +9,21 @@ async function bootstrap() {
       document.fonts.load(`16px "${FONT_NAMES.mono}"`),
       document.fonts.load(`64px "${FONT_NAMES.display}"`),
     ]);
-  } catch {
-    // sem rede — segue com fontes do sistema
-  }
+  } catch {}
 
   new Phaser.Game({
     type: Phaser.AUTO,
-    width: 800,
-    height: 600,
     backgroundColor: COLORS.bg,
     parent: "game",
+    scale: {
+      mode: Phaser.Scale.FIT,
+      autoCenter: Phaser.Scale.CENTER_BOTH,
+      width: 800,
+      height: 600,
+    },
+    input: {
+      activePointers: 3,
+    },
     physics: {
       default: "arcade",
       arcade: {

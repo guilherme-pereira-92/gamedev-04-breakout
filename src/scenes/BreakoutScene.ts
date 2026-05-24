@@ -3,6 +3,7 @@ import { COLORS, COLOR_HEX, TEXT_PRESETS } from "../theme";
 import { drawDiagonalScanlines, createPulsingDot, addCornerLabel } from "../ui";
 import { takeScreenshot } from "../screenshot";
 import { playTone } from "../audio";
+import { isTouchDevice } from "../input";
 import { CAMPAIGN_PHASE_KEY, type GameMode } from "./MenuScene";
 
 const WIDTH = 800;
@@ -234,8 +235,37 @@ export class BreakoutScene extends Phaser.Scene {
 
     this.showReadyOverlay();
 
-    // Debug hook — Playwright lê/escreve estado via window.__breakout pra teste.
-    // Não impacta gameplay; só atribui referências.
+    // Touch: drag horizontal move o paddle. Tap = lançar bola / restart / next.
+    this.input.on("pointermove", (pointer: Phaser.Input.Pointer) => {
+      if (!pointer.isDown) return;
+      this.movePaddleToPointer(pointer.x);
+    });
+    this.input.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
+      this.movePaddleToPointer(pointer.x);
+      if (this.state === "ready" || this.state === "lifelost") {
+        this.launchAllBalls();
+        this.state = "playing";
+        this.hideOverlay();
+      } else if (this.state === "gameover") {
+        this.scene.restart({ mode: this.mode, phase: this.phase });
+      } else if (this.state === "levelclear") {
+        const nextPhase = this.phase + 1;
+        if (this.mode === "campaign" && nextPhase > 5) this.scene.start("menu");
+        else this.scene.start("breakout", { mode: this.mode, phase: nextPhase });
+      } else if (this.state === "campaigncomplete") this.scene.start("menu");
+    });
+
+    this.installDebugHook();
+  }
+
+  private movePaddleToPointer(targetX: number) {
+    const halfW = this.paddle.width / 2;
+    this.paddle.x = Phaser.Math.Clamp(targetX, halfW, WIDTH - halfW);
+    (this.paddle.body as Phaser.Physics.Arcade.Body).updateFromGameObject();
+  }
+
+  // Debug hook — Playwright lê estado via window.__breakout pra testes.
+  private installDebugHook() {
     (window as unknown as { __breakout?: unknown }).__breakout = {
       scene: this,
       getState: () => {
@@ -882,7 +912,9 @@ export class BreakoutScene extends Phaser.Scene {
       .setOrigin(0.5, 0);
 
     this.add.text(22, HEIGHT - 22, this.bottomLeftChrome(), TEXT_PRESETS.hint).setOrigin(0, 1);
-    this.add.text(WIDTH - 22, HEIGHT - 22, "← → · ESPAÇO · P PAUSAR · ESC MENU · K", TEXT_PRESETS.hint).setOrigin(1, 1);
+    this.add.text(WIDTH - 22, HEIGHT - 22, isTouchDevice()
+      ? "ARRASTE PRA MOVER · TOQUE PRA LANÇAR"
+      : "← → · ESPAÇO · P PAUSAR · ESC MENU · K", TEXT_PRESETS.hint).setOrigin(1, 1);
 
     this.refreshChrome();
   }

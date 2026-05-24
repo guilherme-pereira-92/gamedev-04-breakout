@@ -3,6 +3,7 @@ import { COLORS, COLOR_HEX, TEXT_PRESETS } from "../theme";
 import { drawDiagonalScanlines, createPulsingDot, addCornerLabel } from "../ui";
 import { takeScreenshot } from "../screenshot";
 import { unlockAudio } from "../audio";
+import { isTouchDevice } from "../input";
 
 const WIDTH = 800;
 const HEIGHT = 600;
@@ -75,10 +76,16 @@ export class MenuScene extends Phaser.Scene {
         .text(WIDTH / 2, y + 22, opt.description, { ...TEXT_PRESETS.hint, color: COLORS.muted })
         .setOrigin(0.5);
       this.optionDescTexts.push(descText);
+
+      const hitArea = this.add.rectangle(WIDTH / 2, y + 11, 600, 56, 0, 0).setInteractive({ useHandCursor: true });
+      hitArea.on("pointerover", () => { this.selectedIndex = i; this.refreshHighlight(); });
+      hitArea.on("pointerdown", () => { this.selectedIndex = i; this.refreshHighlight(); this.startSelected(); });
     });
 
     this.add
-      .text(WIDTH / 2, HEIGHT - 56, "↑ ↓ ESCOLHER  ·  ENTER JOGAR  ·  K SCREENSHOT", TEXT_PRESETS.hint)
+      .text(WIDTH / 2, HEIGHT - 56, isTouchDevice()
+        ? "TOQUE UMA OPÇÃO PRA JOGAR"
+        : "↑ ↓ ESCOLHER  ·  ENTER JOGAR  ·  K SCREENSHOT", TEXT_PRESETS.hint)
       .setOrigin(0.5);
 
     const kb = this.input.keyboard!;
@@ -123,12 +130,16 @@ export class MenuScene extends Phaser.Scene {
       this.selectedIndex = (this.selectedIndex + 1) % OPTIONS.length;
       this.refreshHighlight();
     } else if (justDown(this.keys.ENTER) || justDown(this.keys.SPACE)) {
-      const opt = OPTIONS[this.selectedIndex];
-      this.scene.start("breakout", {
-        mode: opt.mode,
-        phase: opt.mode === "campaign" ? this.campaignPhase : 1,
-      });
+      this.startSelected();
     }
+  }
+
+  private startSelected() {
+    const opt = OPTIONS[this.selectedIndex];
+    this.scene.start("breakout", {
+      mode: opt.mode,
+      phase: opt.mode === "campaign" ? this.campaignPhase : 1,
+    });
   }
 
   private refreshHighlight() {

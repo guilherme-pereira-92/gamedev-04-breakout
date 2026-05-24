@@ -2,7 +2,8 @@
 <html lang="pt-br">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="theme-color" content="#0a0a0a" />
     <title>Breakout — Game Dev #04</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
@@ -11,14 +12,18 @@
       href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap"
     />
     <style>
-      html, body { margin: 0; padding: 0; background: #0a0a0a; height: 100%; }
+      html, body {
+        margin: 0; padding: 0; background: #0a0a0a; height: 100%; overflow: hidden;
+        touch-action: none; overscroll-behavior: none;
+        user-select: none; -webkit-user-select: none;
+        -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent;
+      }
       body {
         display: flex; align-items: center; justify-content: center;
         font-family: "Geist Mono", monospace;
       }
-      #game {
-        box-shadow: 0 0 60px rgba(255, 69, 0, 0.18), 0 0 4px rgba(245, 241, 234, 0.04);
-      }
+      #game { width: 100vw; height: 100vh; display: flex; align-items: center; justify-content: center; }
+      canvas { display: block; box-shadow: 0 0 40px rgba(255, 69, 0, 0.15); }
     </style>
   </head>
   <body>
