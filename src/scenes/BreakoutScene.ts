@@ -15,7 +15,6 @@ const PADDLE_Y = HEIGHT - 56;
 const PADDLE_SPEED = 520;
 const BALL_SIZE = 12;
 const BALL_BASE_SPEED = 340;
-const MAX_BOUNCE_ANGLE = Math.PI / 3;
 
 const BRICK_COLS = 10;
 const BRICK_W = 64;
@@ -206,9 +205,8 @@ export class BreakoutScene extends Phaser.Scene {
     this.trailGraphics = this.add.graphics();
 
     this.physics.world.setBounds(0, 0, WIDTH, HEIGHT);
-    // NÃO uso setCollideWorldBounds na bola — bounce manual em bounceBallsOffWalls
-    // é mais previsível e bulletproof. Phaser arcade pode falhar com balls rápidas
-    // batendo em tijolos perto da parede ao mesmo tempo.
+    // Canonical Phaser: world bounces nos 3 lados, bottom aberto (bola cai).
+    this.physics.world.setBoundsCollision(true, true, true, false);
 
     this.buildLevel();
     this.spawnBall(true);
@@ -307,12 +305,10 @@ export class BreakoutScene extends Phaser.Scene {
 
     if (this.state === "playing") {
       this.updatePowerupExpirations(time);
-      this.bounceBallsOffWalls();
       this.unstickBalls();
       this.checkLostBalls();
       this.updateAndDrawBallTrails();
     } else {
-      // limpa trails fora de playing pra não aparecer rastro estático
       this.trailGraphics.clear();
     }
   }
@@ -338,43 +334,6 @@ export class BreakoutScene extends Phaser.Scene {
         if (size <= 0) continue;
         this.trailGraphics.fillStyle(COLOR_HEX.accent, alpha);
         this.trailGraphics.fillRect(t.x - size / 2, t.y - size / 2, size, size);
-      }
-      return true;
-    });
-  }
-
-  // Bounce manual da bola nas paredes top/left/right. Bottom é livre (ball cai).
-  // Mais robusto que setCollideWorldBounds — não depende da timeline interna
-  // do engine, sempre garante position clamp + velocity reflect.
-  private bounceBallsOffWalls() {
-    const halfBall = BALL_SIZE / 2;
-    this.balls.children.iterate((b) => {
-      const ball = b as Phaser.GameObjects.Rectangle;
-      if (ball.getData("attached")) return true;
-      const body = ball.body as Phaser.Physics.Arcade.Body;
-
-      let bounced = false;
-
-      // left wall
-      if (ball.x - halfBall < 0) {
-        ball.x = halfBall;
-        body.velocity.x = Math.abs(body.velocity.x);
-        bounced = true;
-      } else if (ball.x + halfBall > WIDTH) {
-        ball.x = WIDTH - halfBall;
-        body.velocity.x = -Math.abs(body.velocity.x);
-        bounced = true;
-      }
-
-      // top wall (bottom é livre — bola cai = perde vida)
-      if (ball.y - halfBall < 0) {
-        ball.y = halfBall;
-        body.velocity.y = Math.abs(body.velocity.y);
-        bounced = true;
-      }
-
-      if (bounced) {
-        body.updateFromGameObject();
       }
       return true;
     });
@@ -509,12 +468,12 @@ export class BreakoutScene extends Phaser.Scene {
     const ball = this.add.rectangle(WIDTH / 2, PADDLE_Y - 16, BALL_SIZE, BALL_SIZE, COLOR_HEX.accent);
     this.physics.add.existing(ball);
     const body = ball.body as Phaser.Physics.Arcade.Body;
-    // setBounce(0) → Arcade não tenta refletir velocity automaticamente.
-    // Toda reflexão é manual nos callbacks (canonical Breakout — research-based).
-    // Isso evita o bug "ball goes opposite of paddle motion" que vinha do
-    // relative-velocity reflection do Arcade.
-    body.setBounce(0, 0);
-    body.setMaxSpeed(500);
+    // Canonical Phaser Breakout (photonstorm + MDN): setBounce(1) +
+    // setCollideWorldBounds(true), deixa Arcade auto-refletir, callbacks só
+    // ajustam velocityX (paddle) ou normalizam speed (brick).
+    body.setBounce(1, 1);
+    body.setCollideWorldBounds(true);
+    body.setMaxSpeed(600);
     if (restPaddle) {
       ball.setData("attached", true);
     }
@@ -542,24 +501,32 @@ export class BreakoutScene extends Phaser.Scene {
 
     const target = this.currentBallSpeed;
 
-    // Posição do impacto no paddle determina o ângulo base (Pong/Breakout
-    // classic). Player intent (tecla pressionada) é um BIAS suave: adiciona
-    // ±0.5 ao offset, sempre push a ball na direção do player. Evita o bug
-    // "paddle move pra direita, bola vai esquerda" sem quebrar a previsibilidade.
-    const positionOffset = Phaser.Math.Clamp(
-      (ball.x - this.paddle.x) / (this.paddle.width / 2), -1, 1,
-    );
-
+    // Canonical Phaser Breakout pattern (photonstorm/phaser3-examples):
+    // Arcade JÁ inverteu velocityY (setBounce=1). Aqui só MEXEMOS NO X.
+    // - Se player está pressionando tecla, OVERRIDE pra direção dela
+    //   (intent prioritário — mexe paddle = bola vai pra onde paddle aponta)
+    // - Senão, formula clássica: vx ∝ (ball.x - paddle.x)
     const intent =
       this.keys.RIGHT.isDown || this.keys.D.isDown ? 1 :
       this.keys.LEFT.isDown  || this.keys.A.isDown ? -1 : 0;
 
-    const effectiveOffset = intent !== 0
-      ? Phaser.Math.Clamp(positionOffset + intent * 0.5, -1, 1)
-      : positionOffset;
+    if (intent !== 0) {
+      // Player tem controle direto — vx maior na direção do intent (70% do speed)
+      body.setVelocityX(intent * target * 0.7);
+    } else {
+      // Canonical: vx proporcional a quanto do centro a bola bateu
+      // Multiplicador 6 calibrado pra dar até ~±60° em borda do paddle (60px)
+      const diff = ball.x - this.paddle.x;
+      body.setVelocityX(diff * 6);
+    }
 
-    const angle = effectiveOffset * MAX_BOUNCE_ANGLE;
-    body.setVelocity(Math.sin(angle) * target, -Math.cos(angle) * target);
+    // Normaliza velocidade total pro target (Arcade não garante isso após X mexido)
+    const speed = body.velocity.length();
+    if (speed > 0) {
+      body.velocity.scale(target / speed);
+    } else {
+      body.setVelocity(0, -target);
+    }
 
     this.playPaddleHitFeedback(ball.x);
   }
@@ -624,53 +591,29 @@ export class BreakoutScene extends Phaser.Scene {
       this.cameras.main.shake(40, 0.002);
     }
 
-    // 2. Reflete velocity APENAS UMA VEZ POR FRAME.
-    //    Bola sandwiched entre 2 tijolos colidiria 2x no mesmo step, refletindo
-    //    duas vezes e fazendo 180° (parecia "random direction change").
+    // Per-frame guard: bola sandwich entre 2 tijolos colidiria 2x no mesmo
+    // step. Sem guard, Arcade refletiria 2 vezes = 180° de volta. Apenas a
+    // PRIMEIRA colisão por frame ajusta velocity.
     const frame = this.game.loop.frame;
     const lastReflectFrame = (ball.getData("lastBrickFrame") as number | undefined) ?? -1;
     if (lastReflectFrame === frame) return;
     ball.setData("lastBrickFrame", frame);
 
-    // 3. Reflexão CANONICAL: detecta eixo de menor overlap, inverte só nele.
-    this.reflectBallOffBrick(ball, brick);
-  }
-
-  // Reflexão canônica AABB: detecta de qual lado a bola bateu pelo eixo de
-  // menor overlap, inverte só a componente nesse eixo. Depois normaliza pro
-  // target speed e clampa |vy| pra não ficar horizontal preso.
-  private reflectBallOffBrick(
-    ball: Phaser.GameObjects.Rectangle,
-    brick: Phaser.GameObjects.Rectangle,
-  ) {
+    // Arcade já inverteu velocity (setBounce=1). Aqui só normalizamos o speed
+    // ao target e clampamos |vy| pra impedir bola horizontal presa.
     const body = ball.body as Phaser.Physics.Arcade.Body;
     const target = this.currentBallSpeed;
-
-    // Calcula overlap em cada eixo no momento da colisão.
-    const overlapX = (ball.width + brick.width) / 2 - Math.abs(ball.x - brick.x);
-    const overlapY = (ball.height + brick.height) / 2 - Math.abs(ball.y - brick.y);
-
     let vx = body.velocity.x;
     let vy = body.velocity.y;
+    const speed = Math.sqrt(vx * vx + vy * vy);
 
-    if (overlapX < overlapY) {
-      // Bateu lateral (esquerda ou direita do tijolo): inverte x.
-      vx = -Math.abs(vx) * Math.sign(ball.x - brick.x);
-    } else {
-      // Bateu top/bottom: inverte y.
-      vy = -Math.abs(vy) * Math.sign(ball.y - brick.y);
-    }
-
-    // Normaliza pro target speed
-    let speed = Math.sqrt(vx * vx + vy * vy);
     if (speed < 1) {
       body.setVelocity(0, -target);
       return;
     }
+
     vx = (vx / speed) * target;
     vy = (vy / speed) * target;
-
-    // Clamp |vy| >= 20% do speed (impede stuck horizontal)
     const minVyAbs = target * 0.2;
     if (Math.abs(vy) < minVyAbs) {
       vy = (vy < 0 ? -1 : 1) * minVyAbs;
@@ -678,7 +621,6 @@ export class BreakoutScene extends Phaser.Scene {
       const remaining = Math.sqrt(Math.max(0, target * target - vy * vy));
       vx = (vx >= 0 ? 1 : -1) * remaining;
     }
-
     body.setVelocity(vx, vy);
   }
 
