@@ -131,9 +131,6 @@ export class BreakoutScene extends Phaser.Scene {
   private currentBallSpeed = BALL_BASE_SPEED;
   private slowEndAt = 0;
   private wideEndAt = 0;
-  private lastBrickBreakAt = 0;
-  private paddleVx = 0;
-  private lastPaddleX = 0;
   private trailGraphics!: Phaser.GameObjects.Graphics;
 
   private scoreText!: Phaser.GameObjects.Text;
@@ -364,11 +361,12 @@ export class BreakoutScene extends Phaser.Scene {
     });
   }
 
-  // Rede de segurança para bolas:
-  //  - escaparam da área de jogo (NaN, tunneling) → teleporta pro paddle
-  //  - travadas com velocity quase-zero → chuta pra cima
-  //  - andando quase-puramente horizontal por muito tempo → inclina um pouco
-  // Só roda em "playing"; bolas attached são ignoradas.
+  // Rede de segurança apenas defensiva:
+  //  - escaparam da área de jogo (tunneling) → teleporta pro paddle
+  //  - velocity virou NaN/Infinity → idem
+  // SEM anti-stuck, SEM no-progress: causa mudanças aleatórias na percepção
+  // do jogador. Bounce manual já garante que nunca escapa. Loops vão ser
+  // quebrados naturalmente pela movimentação do paddle do jogador.
   private unstickBalls() {
     this.balls.children.iterate((b) => {
       const ball = b as Phaser.GameObjects.Rectangle;
@@ -380,62 +378,11 @@ export class BreakoutScene extends Phaser.Scene {
       const escaped = ball.x < -8 || ball.x > WIDTH + 8 || ball.y < -8;
 
       if (insane || escaped) {
-        // teleporta pro topo do paddle e lança pra cima
         body.reset(this.paddle.x, PADDLE_Y - 20);
         body.setVelocity(0, -this.currentBallSpeed);
-        return true;
-      }
-
-      const speed = body.velocity.length();
-      if (speed < 40) {
-        const angle = Phaser.Math.FloatBetween(-Math.PI / 3, Math.PI / 3) - Math.PI / 2;
-        body.setVelocity(
-          Math.cos(angle) * this.currentBallSpeed,
-          Math.sin(angle) * this.currentBallSpeed,
-        );
-        return true;
-      }
-
-      // Anti-stuck HORIZONTAL: |vy| < 8% (bola quase horizontal pura).
-      if (Math.abs(body.velocity.y) < speed * 0.08) {
-        const sign = body.velocity.y >= 0 ? 1 : -1;
-        const newVy = sign * speed * 0.22;
-        const newSpeed = Math.sqrt(body.velocity.x * body.velocity.x + newVy * newVy);
-        const k = this.currentBallSpeed / newSpeed;
-        body.setVelocity(body.velocity.x * k, newVy * k);
-      }
-
-      // Anti-stuck VERTICAL: |vx| < 8% (bola pingando reto entre paddle e brick).
-      // Adiciona componente lateral pra quebrar o loop.
-      if (Math.abs(body.velocity.x) < speed * 0.08) {
-        const sign = body.velocity.x !== 0
-          ? (body.velocity.x > 0 ? 1 : -1)
-          : (Math.random() < 0.5 ? -1 : 1);
-        const newVx = sign * speed * 0.22;
-        const newSpeed = Math.sqrt(newVx * newVx + body.velocity.y * body.velocity.y);
-        const k = this.currentBallSpeed / newSpeed;
-        body.setVelocity(newVx * k, body.velocity.y * k);
       }
       return true;
     });
-
-    // Detector de "sem progresso": se nenhum tijolo quebrou em 6s durante
-    // playing, a bola está num loop preso (canto da tela, corredor vazio, etc.).
-    // Teleporta pro centro e relança em direção aleatória pra cima.
-    if (this.state === "playing" && this.lastBrickBreakAt > 0
-        && this.time.now - this.lastBrickBreakAt > 6000) {
-      const ball = this.balls.getChildren()[0] as Phaser.GameObjects.Rectangle | undefined;
-      if (ball && !ball.getData("attached")) {
-        const body = ball.body as Phaser.Physics.Arcade.Body;
-        body.reset(WIDTH / 2, HEIGHT / 2);
-        const angle = Phaser.Math.FloatBetween(-Math.PI / 3, Math.PI / 3) - Math.PI / 2;
-        body.setVelocity(
-          Math.cos(angle) * this.currentBallSpeed,
-          Math.sin(angle) * this.currentBallSpeed,
-        );
-        this.lastBrickBreakAt = this.time.now;
-      }
-    }
   }
 
   // ---------- input ----------
@@ -485,13 +432,6 @@ export class BreakoutScene extends Phaser.Scene {
 
     const halfW = this.paddle.width / 2;
     this.paddle.x = Phaser.Math.Clamp(this.paddle.x, halfW, WIDTH - halfW);
-
-    // Rastreia velocidade do paddle pra dar "english" na bola quando ela bate.
-    // dt pode ser 0 no primeiro frame; protege.
-    if (dt > 0) {
-      this.paddleVx = (this.paddle.x - this.lastPaddleX) / dt;
-    }
-    this.lastPaddleX = this.paddle.x;
 
     body.updateFromGameObject();
   }
@@ -558,7 +498,6 @@ export class BreakoutScene extends Phaser.Scene {
       body.setVelocity(Math.cos(angle) * this.currentBallSpeed, Math.sin(angle) * this.currentBallSpeed);
       return true;
     });
-    this.lastBrickBreakAt = this.time.now;
   }
 
   // ---------- collisions ----------
@@ -570,41 +509,30 @@ export class BreakoutScene extends Phaser.Scene {
 
     const target = this.currentBallSpeed;
 
-    // 1. Ângulo base por posição de impacto no paddle (Pong classic).
-    //    offset: -1 (canto esquerdo) a +1 (canto direito)
-    const offset = Phaser.Math.Clamp((ball.x - this.paddle.x) / (this.paddle.width / 2), -1, 1);
-    const positionAngle = offset * MAX_BOUNCE_ANGLE; // ±60° do vertical
-    let vx = Math.sin(positionAngle) * target;
-    let vy = -Math.cos(positionAngle) * target;
+    // Direção é determinada por DUAS coisas:
+    //   1. Posição de impacto no paddle (Pong classic, 35% do peso)
+    //   2. Intent do jogador (qual tecla está pressionando, 65% do peso)
+    // Intent prioritário porque é o que o player TENTA fazer — sem isso, mover
+    // paddle pra direita podia gerar offset negativo (paddle passa por baixo da
+    // bola), e a bola ia esquerda contrariando o player.
+    const intent =
+      this.keys.RIGHT.isDown || this.keys.D.isDown ? 1 :
+      this.keys.LEFT.isDown  || this.keys.A.isDown ? -1 : 0;
 
-    // 2. "English" do paddle: velocidade horizontal dele soma na bola.
-    //    Mover paddle pra direita = bola vai mais pra direita. Skill expression.
-    const paddleInfluence = this.paddleVx * 0.42;
-    vx += paddleInfluence;
+    const positionOffset = Phaser.Math.Clamp(
+      (ball.x - this.paddle.x) / (this.paddle.width / 2), -1, 1,
+    );
 
-    // 3. Renormaliza pra manter velocidade alvo
-    let speed = Math.sqrt(vx * vx + vy * vy);
-    if (speed > 0) {
-      vx = (vx / speed) * target;
-      vy = (vy / speed) * target;
-    } else {
-      vx = 0;
-      vy = -target;
-    }
+    const effectiveOffset = intent !== 0
+      ? Phaser.Math.Clamp(positionOffset * 0.35 + intent * 0.65, -1, 1)
+      : positionOffset;
 
-    // 4. Garante componente vertical mínima: bola sempre sobe pelo menos 30°
-    //    acima da horizontal após bater no paddle. Sem isso, paddle muito ativo
-    //    + position offset extremo poderia jogar bola quase horizontal.
-    const minVyAbs = target * 0.5; // sin(30°) = 0.5
-    if (vy > -minVyAbs) {
-      vy = -minVyAbs;
-      const remaining = Math.sqrt(Math.max(0, target * target - vy * vy));
-      vx = (vx >= 0 ? 1 : -1) * remaining;
-    }
+    const angle = effectiveOffset * MAX_BOUNCE_ANGLE;
+    const vx = Math.sin(angle) * target;
+    const vy = -Math.cos(angle) * target;
 
     body.setVelocity(vx, vy);
 
-    // 5. Feedback visual + tátil
     this.playPaddleHitFeedback(ball.x);
   }
 
@@ -656,7 +584,6 @@ export class BreakoutScene extends Phaser.Scene {
     if (hp <= 0) {
       this.score += SCORE_PER_BRICK;
       this.brickCount--;
-      this.lastBrickBreakAt = this.time.now;
       this.refreshChrome();
       this.particles.emitParticleAt(brick.x, brick.y, 12);
       playTone(660, 80, "triangle", 0.12);
@@ -666,14 +593,12 @@ export class BreakoutScene extends Phaser.Scene {
 
       if (this.brickCount <= 0) this.levelCleared();
     } else {
-      this.lastBrickBreakAt = this.time.now; // bater num duro também conta como progresso
-      // visualizou batida — engrossa borda
       brick.setStrokeStyle(1.5, COLOR_HEX.accent, 1);
       playTone(330, 60, "square", 0.10);
     }
 
-    // Normaliza a magnitude pra velocidade alvo + adiciona jitter de ±4° pra
-    // que cada rebote seja levemente diferente (fim do "sempre mesmo lugar").
+    // Normaliza só a magnitude — direção da reflexão é o que a física calculou.
+    // SEM jitter aleatório: previsibilidade > variação.
     const body = ball.body as Phaser.Physics.Arcade.Body;
     const vx = body.velocity.x;
     const vy = body.velocity.y;
@@ -683,10 +608,8 @@ export class BreakoutScene extends Phaser.Scene {
     if (speed < 1) {
       body.setVelocity(0, -target);
     } else {
-      const baseAngle = Math.atan2(vy, vx);
-      const jitter = Phaser.Math.FloatBetween(-0.07, 0.07); // ±~4°
-      const finalAngle = baseAngle + jitter;
-      body.setVelocity(Math.cos(finalAngle) * target, Math.sin(finalAngle) * target);
+      const k = target / speed;
+      body.setVelocity(vx * k, vy * k);
     }
   }
 
