@@ -597,8 +597,10 @@ export class BreakoutScene extends Phaser.Scene {
       playTone(330, 60, "square", 0.10);
     }
 
-    // Normaliza só a magnitude — direção da reflexão é o que a física calculou.
-    // SEM jitter aleatório: previsibilidade > variação.
+    // Normaliza magnitude pro target speed + garante vy mínimo (10° da horizontal).
+    // Correção PONTUAL no momento do brick hit (não recorre por frame), evita
+    // o ball ficar grudado horizontal entre fileiras de tijolos. Sem isso, o
+    // Arcade pode resultar em vy~0 após colisão tangencial.
     const body = ball.body as Phaser.Physics.Arcade.Body;
     const vx = body.velocity.x;
     const vy = body.velocity.y;
@@ -607,10 +609,22 @@ export class BreakoutScene extends Phaser.Scene {
 
     if (speed < 1) {
       body.setVelocity(0, -target);
-    } else {
-      const k = target / speed;
-      body.setVelocity(vx * k, vy * k);
+      return;
     }
+
+    let finalVx = (vx / speed) * target;
+    let finalVy = (vy / speed) * target;
+    const minVyAbs = target * 0.18; // 18% → ~10° acima/abaixo da horizontal
+
+    if (Math.abs(finalVy) < minVyAbs) {
+      // Preserva sign de vy (se vy=0, vai pra cima — ball deveria subir após hit)
+      finalVy = (finalVy < 0 ? -1 : 1) * minVyAbs;
+      // Recalcula vx pra manter speed = target
+      const remaining = Math.sqrt(Math.max(0, target * target - finalVy * finalVy));
+      finalVx = (finalVx >= 0 ? 1 : -1) * remaining;
+    }
+
+    body.setVelocity(finalVx, finalVy);
   }
 
   // Ghost: retângulo branco que fica no lugar do tijolo destruído e fade out
