@@ -13,6 +13,14 @@ export function isTouchDevice(): boolean {
   return false;
 }
 
+// Detecta se devemos usar LAYOUT mobile (fullscreen Scale.RESIZE) ou
+// desktop (canvas centrado 800×600 Scale.FIT). Combinação de touch +
+// largura: tablet landscape (>= 900px) usa layout desktop mesmo sendo touch.
+export function isMobileLayout(): boolean {
+  if (typeof window === "undefined") return false;
+  return isTouchDevice() && window.innerWidth < 900;
+}
+
 export type SwipeDirection = "up" | "down" | "left" | "right";
 
 interface SwipeOptions {
