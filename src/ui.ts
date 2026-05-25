@@ -75,6 +75,34 @@ export function styleHelpers() {
   return { COLORS, COLOR_HEX, TEXT_PRESETS };
 }
 
+// Tamanhos de texto responsivos baseados no menor lado do viewport.
+// Usar isso em vez de tamanhos hardcoded no TEXT_PRESETS quando o texto for
+// dominante visualmente (hero outlined title, display number) — garante que
+// "SEQUENCE" não sai do canvas em portrait 360px.
+//
+// kind:
+//   hero    — título principal das cenas (clamp 48–112)
+//   display — score grande / FIM (clamp 36–80)
+//   title   — número de fase, label médio (clamp 24–56)
+export type ResponsiveTextKind = "hero" | "display" | "title";
+
+export function getResponsiveTextSize(scene: Phaser.Scene, kind: ResponsiveTextKind): string {
+  const min = Math.min(scene.scale.width, scene.scale.height);
+  let px: number;
+  switch (kind) {
+    case "hero":
+      px = Math.max(48, Math.min(112, Math.floor(min * 0.13)));
+      break;
+    case "display":
+      px = Math.max(36, Math.min(80, Math.floor(min * 0.10)));
+      break;
+    case "title":
+      px = Math.max(24, Math.min(56, Math.floor(min * 0.075)));
+      break;
+  }
+  return `${px}px`;
+}
+
 // Dual-camera responsive: main camera renderiza GAMEPLAY com zoom pra caber
 // no viewport (mantém coords lógicas 800×600); UI camera renderiza CHROME em
 // coords reais do viewport. Resolve "true mobile feel" sem refatorar lógica

@@ -1,6 +1,6 @@
 import Phaser from "phaser";
 import { COLORS, COLOR_HEX, TEXT_PRESETS } from "../theme";
-import { drawDiagonalScanlines, createPulsingDot, addCornerLabel } from "../ui";
+import { drawDiagonalScanlines, createPulsingDot, addCornerLabel, getResponsiveTextSize } from "../ui";
 import { takeScreenshot } from "../screenshot";
 import { unlockAudio } from "../audio";
 import { isTouchDevice } from "../input";
@@ -57,7 +57,7 @@ export class MenuScene extends Phaser.Scene {
     this.add
       .text(this.scale.width / 2, 180, "BREAKOUT", TEXT_PRESETS.heroOutline)
       .setOrigin(0.5)
-      .setFontSize("88px");
+      .setFontSize(getResponsiveTextSize(this, "hero"));
 
     this.add
       .text(this.scale.width / 2, 244, "quebre todos os tijolos · não deixe a bola cair", TEXT_PRESETS.body)

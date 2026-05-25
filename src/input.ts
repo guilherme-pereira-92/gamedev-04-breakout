@@ -29,6 +29,7 @@ interface SwipeOptions {
 }
 
 // Detecta swipes em uma cena. Útil pro Snake.
+// Listeners são removidos automaticamente no scene.shutdown (sem memory leak).
 export function onSwipe(
   scene: Phaser.Scene,
   callback: (dir: SwipeDirection) => void,
@@ -41,14 +42,14 @@ export function onSwipe(
   let startTime = 0;
   let tracking = false;
 
-  scene.input.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
+  const downHandler = (pointer: Phaser.Input.Pointer) => {
     startX = pointer.x;
     startY = pointer.y;
     startTime = scene.time.now;
     tracking = true;
-  });
+  };
 
-  scene.input.on("pointerup", (pointer: Phaser.Input.Pointer) => {
+  const upHandler = (pointer: Phaser.Input.Pointer) => {
     if (!tracking) return;
     tracking = false;
     const dx = pointer.x - startX;
@@ -61,6 +62,13 @@ export function onSwipe(
     } else {
       callback(dy > 0 ? "down" : "up");
     }
+  };
+
+  scene.input.on("pointerdown", downHandler);
+  scene.input.on("pointerup", upHandler);
+  scene.events.once("shutdown", () => {
+    scene.input.off("pointerdown", downHandler);
+    scene.input.off("pointerup", upHandler);
   });
 }
 
@@ -77,20 +85,27 @@ export function onDrag(
 ): void {
   let pressed = false;
 
-  scene.input.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
+  const downHandler = (pointer: Phaser.Input.Pointer) => {
     pressed = true;
     callback(pointer.x, pointer.y, true);
-  });
-
-  scene.input.on("pointermove", (pointer: Phaser.Input.Pointer) => {
+  };
+  const moveHandler = (pointer: Phaser.Input.Pointer) => {
     if (!pressed) return;
     callback(pointer.x, pointer.y, true);
-  });
-
-  scene.input.on("pointerup", (pointer: Phaser.Input.Pointer) => {
+  };
+  const upHandler = (pointer: Phaser.Input.Pointer) => {
     if (!pressed) return;
     pressed = false;
     callback(pointer.x, pointer.y, false);
+  };
+
+  scene.input.on("pointerdown", downHandler);
+  scene.input.on("pointermove", moveHandler);
+  scene.input.on("pointerup", upHandler);
+  scene.events.once("shutdown", () => {
+    scene.input.off("pointerdown", downHandler);
+    scene.input.off("pointermove", moveHandler);
+    scene.input.off("pointerup", upHandler);
   });
 }
 
@@ -113,14 +128,13 @@ export function onTap(
   let startTime = 0;
   let tracking = false;
 
-  scene.input.on("pointerdown", (pointer: Phaser.Input.Pointer) => {
+  const downHandler = (pointer: Phaser.Input.Pointer) => {
     startX = pointer.x;
     startY = pointer.y;
     startTime = scene.time.now;
     tracking = true;
-  });
-
-  scene.input.on("pointerup", (pointer: Phaser.Input.Pointer) => {
+  };
+  const upHandler = (pointer: Phaser.Input.Pointer) => {
     if (!tracking) return;
     tracking = false;
     const dx = pointer.x - startX;
@@ -129,6 +143,13 @@ export function onTap(
     const duration = scene.time.now - startTime;
     if (dist > maxDistance || duration > maxDuration) return;
     callback(pointer.x, pointer.y);
+  };
+
+  scene.input.on("pointerdown", downHandler);
+  scene.input.on("pointerup", upHandler);
+  scene.events.once("shutdown", () => {
+    scene.input.off("pointerdown", downHandler);
+    scene.input.off("pointerup", upHandler);
   });
 }
 

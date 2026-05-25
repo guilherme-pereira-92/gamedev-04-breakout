@@ -1,9 +1,9 @@
 import Phaser from "phaser";
 import { COLORS, COLOR_HEX, TEXT_PRESETS } from "../theme";
-import { drawDiagonalScanlines, createPulsingDot, addCornerLabel, setupResponsiveCameras } from "../ui";
+import { drawDiagonalScanlines, createPulsingDot, addCornerLabel, setupResponsiveCameras, getResponsiveTextSize } from "../ui";
 import { takeScreenshot } from "../screenshot";
 import { playTone } from "../audio";
-import { isTouchDevice } from "../input";
+import { isTouchDevice, isMobileLayout } from "../input";
 import { CAMPAIGN_PHASE_KEY, type GameMode } from "./MenuScene";
 
 const WIDTH = 800;
@@ -146,6 +146,11 @@ export class BreakoutScene extends Phaser.Scene {
   private overlayTitle!: Phaser.GameObjects.Text;
   private overlaySubtitle!: Phaser.GameObjects.Text;
   private overlayHint!: Phaser.GameObjects.Text;
+  private rotateBg!: Phaser.GameObjects.Rectangle;
+  private rotateTitle!: Phaser.GameObjects.Text;
+  private rotateHint!: Phaser.GameObjects.Text;
+  private rotateActive = false;
+  private pausedByRotate = false;
 
   private keys!: Record<
     "LEFT" | "RIGHT" | "A" | "D" | "SPACE" | "R" | "P" | "ESC" | "K",
@@ -229,8 +234,8 @@ export class BreakoutScene extends Phaser.Scene {
     this.physics.add.collider(this.balls, this.bricks, this.onBrickHit, undefined, this);
     this.physics.add.overlap(this.powerups, this.paddle, this.onPowerupCaught, undefined, this);
 
-    this.drawChrome();
     this.drawOverlay();
+    this.drawChrome();
 
     const kb = this.input.keyboard!;
     this.keys = {
@@ -897,9 +902,40 @@ export class BreakoutScene extends Phaser.Scene {
       this.overlayTitle.setPosition(nW / 2, nH / 2 - 70);
       this.overlaySubtitle.setPosition(nW / 2, nH / 2 + 6);
       this.overlayHint.setPosition(nW / 2, nH / 2 + 56);
+      this.rotateBg.setPosition(nW / 2, nH / 2).setSize(nW, nH);
+      this.rotateTitle.setPosition(nW / 2, nH / 2 - 30).setFontSize(getResponsiveTextSize(this, "title"));
+      this.rotateHint.setPosition(nW / 2, nH / 2 + 24);
+      this.checkRotateOverlay();
     });
 
+    this.checkRotateOverlay();
     this.refreshChrome();
+  }
+
+  // Detecta portrait mobile (jogo é 4:3 — em portrait fica minúsculo).
+  // Pausa physics e mostra overlay até rotacionar.
+  private checkRotateOverlay() {
+    const portrait = this.scale.height > this.scale.width;
+    const shouldShow = isMobileLayout() && portrait;
+    if (shouldShow === this.rotateActive) return;
+    this.rotateActive = shouldShow;
+    if (shouldShow) {
+      if (this.physics.world && !this.physics.world.isPaused) {
+        this.physics.pause();
+        this.pausedByRotate = true;
+      }
+      this.rotateBg.setVisible(true);
+      this.rotateTitle.setVisible(true);
+      this.rotateHint.setVisible(true);
+    } else {
+      this.rotateBg.setVisible(false);
+      this.rotateTitle.setVisible(false);
+      this.rotateHint.setVisible(false);
+      if (this.pausedByRotate && this.state === "playing") {
+        this.physics.resume();
+      }
+      this.pausedByRotate = false;
+    }
   }
 
   private bottomLeftChrome(): string {
@@ -924,12 +960,26 @@ export class BreakoutScene extends Phaser.Scene {
     const H = this.scale.height;
     this.overlayBg = this.add.rectangle(W / 2, H / 2, W, H, COLOR_HEX.bg, 0.82);
     this._registerUi(this.overlayBg);
-    this.overlayTitle = this.add.text(W / 2, H / 2 - 70, "", TEXT_PRESETS.heroOutline).setOrigin(0.5).setFontSize("76px");
+    this.overlayTitle = this.add.text(W / 2, H / 2 - 70, "", TEXT_PRESETS.heroOutline).setOrigin(0.5).setFontSize(getResponsiveTextSize(this, "hero"));
     this._registerUi(this.overlayTitle);
     this.overlaySubtitle = this.add.text(W / 2, H / 2 + 6, "", TEXT_PRESETS.body).setOrigin(0.5);
     this._registerUi(this.overlaySubtitle);
     this.overlayHint = this.add.text(W / 2, H / 2 + 56, "", TEXT_PRESETS.hint).setOrigin(0.5);
     this._registerUi(this.overlayHint);
+
+    // Portrait-only overlay: pede pra girar o dispositivo.
+    // Fica acima do overlayBg (rendered depois) e tem opacidade total.
+    this.rotateBg = this.add.rectangle(W / 2, H / 2, W, H, COLOR_HEX.bg, 0.96).setVisible(false);
+    this._registerUi(this.rotateBg);
+    this.rotateTitle = this.add.text(W / 2, H / 2 - 30, "GIRE O DISPOSITIVO", TEXT_PRESETS.heroOutline)
+      .setOrigin(0.5)
+      .setFontSize(getResponsiveTextSize(this, "title"))
+      .setVisible(false);
+    this._registerUi(this.rotateTitle);
+    this.rotateHint = this.add.text(W / 2, H / 2 + 24, "esse jogo é melhor em modo paisagem", TEXT_PRESETS.body)
+      .setOrigin(0.5)
+      .setVisible(false);
+    this._registerUi(this.rotateHint);
   }
 
   private showReadyOverlay() {
