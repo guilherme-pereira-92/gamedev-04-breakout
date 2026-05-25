@@ -273,7 +273,8 @@ export class BreakoutScene extends Phaser.Scene {
   private movePaddleToPointer(targetX: number) {
     // targetX vem em coords do viewport — converte pra world coords
     const world = this._worldPoint(targetX, 0);
-    const halfW = this.paddle.width / 2;
+    // displayWidth inclui scaleX (wide power-up)
+    const halfW = this.paddle.displayWidth / 2;
     this.paddle.x = Phaser.Math.Clamp(world.x, halfW, WIDTH - halfW);
     (this.paddle.body as Phaser.Physics.Arcade.Body).updateFromGameObject();
   }
@@ -435,7 +436,8 @@ export class BreakoutScene extends Phaser.Scene {
     if (left && !right) this.paddle.x -= PADDLE_SPEED * dt;
     else if (right && !left) this.paddle.x += PADDLE_SPEED * dt;
 
-    const halfW = this.paddle.width / 2;
+    // displayWidth inclui scaleX (importante quando wide power-up está ativo)
+    const halfW = this.paddle.displayWidth / 2;
     this.paddle.x = Phaser.Math.Clamp(this.paddle.x, halfW, WIDTH - halfW);
 
     body.updateFromGameObject();
@@ -518,26 +520,22 @@ export class BreakoutScene extends Phaser.Scene {
 
     const target = this.currentBallSpeed;
 
-    // Canonical Phaser Breakout pattern (photonstorm/phaser3-examples):
-    // Arcade JÁ inverteu velocityY (setBounce=1). Aqui só MEXEMOS NO X.
-    // - Se player está pressionando tecla, OVERRIDE pra direção dela
-    //   (intent prioritário — mexe paddle = bola vai pra onde paddle aponta)
-    // - Senão, formula clássica: vx ∝ (ball.x - paddle.x)
+    // Canonical Arkanoid (mariotoledo/arkanoid-phaser): vx ∝ (ball.x - paddle.x).
+    // O multiplicador divide pela displayWidth/2 do paddle (escala automaticamente
+    // quando wide power-up ativo). Arcade já inverteu vy (setBounce=1).
     const intent =
       this.keys.RIGHT.isDown || this.keys.D.isDown ? 1 :
       this.keys.LEFT.isDown  || this.keys.A.isDown ? -1 : 0;
 
     if (intent !== 0) {
-      // Player tem controle direto — vx maior na direção do intent (70% do speed)
       body.setVelocityX(intent * target * 0.7);
     } else {
-      // Canonical: vx proporcional a quanto do centro a bola bateu
-      // Multiplicador 6 calibrado pra dar até ~±60° em borda do paddle (60px)
-      const diff = ball.x - this.paddle.x;
-      body.setVelocityX(diff * 6);
+      const halfPaddle = this.paddle.displayWidth / 2;
+      const diff = (ball.x - this.paddle.x) / halfPaddle; // -1 a +1
+      body.setVelocityX(diff * target * 0.7);
     }
 
-    // Normaliza velocidade total pro target (Arcade não garante isso após X mexido)
+    // Garante speed total = target (impede drift por colisões em cadeia)
     const speed = body.velocity.length();
     if (speed > 0) {
       body.velocity.scale(target / speed);
@@ -717,8 +715,10 @@ export class BreakoutScene extends Phaser.Scene {
     const now = this.time.now;
     switch (type) {
       case "wide":
-        this.paddle.setSize(PADDLE_W_WIDE, PADDLE_H);
-        (this.paddle.body as Phaser.Physics.Arcade.Body).setSize(PADDLE_W_WIDE, PADDLE_H, true);
+        // Canonical Arkanoid (mariotoledo/arkanoid-phaser): use scaleX.
+        // body.setSize tem desync conhecido com visual em Phaser
+        // (issues #2470, #2720, #3997). scaleX escala body automaticamente.
+        this.paddle.setScale(PADDLE_W_WIDE / PADDLE_W, 1);
         this.wideEndAt = now + POWERUP_DURATION_MS;
         break;
       case "slow":
@@ -738,8 +738,7 @@ export class BreakoutScene extends Phaser.Scene {
 
   private updatePowerupExpirations(now: number) {
     if (this.wideEndAt > 0 && now >= this.wideEndAt) {
-      this.paddle.setSize(PADDLE_W, PADDLE_H);
-      (this.paddle.body as Phaser.Physics.Arcade.Body).setSize(PADDLE_W, PADDLE_H, true);
+      this.paddle.setScale(1, 1);
       this.wideEndAt = 0;
     }
     if (this.slowEndAt > 0 && now >= this.slowEndAt) {
@@ -820,8 +819,7 @@ export class BreakoutScene extends Phaser.Scene {
       ball.setData("attached", true);
       return true;
     });
-    this.paddle.setSize(PADDLE_W, PADDLE_H);
-    (this.paddle.body as Phaser.Physics.Arcade.Body).setSize(PADDLE_W, PADDLE_H, true);
+    this.paddle.setScale(1, 1);
     this.wideEndAt = 0;
     this.slowEndAt = 0;
     this.currentBallSpeed = this.level.ballSpeed;
