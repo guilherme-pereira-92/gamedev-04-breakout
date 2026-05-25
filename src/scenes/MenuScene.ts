@@ -5,8 +5,6 @@ import { takeScreenshot } from "../screenshot";
 import { unlockAudio } from "../audio";
 import { isTouchDevice } from "../input";
 
-const WIDTH = 800;
-const HEIGHT = 600;
 const CAMPAIGN_PHASE_KEY = "gamedev-04-breakout-campaign-phase";
 
 export type GameMode = "campaign" | "endless";
@@ -40,50 +38,50 @@ export class MenuScene extends Phaser.Scene {
   create() {
     this.campaignPhase = this.loadCampaignPhase();
 
-    this.add.rectangle(WIDTH / 2, HEIGHT / 2, WIDTH, HEIGHT, COLOR_HEX.bg);
-    drawDiagonalScanlines(this, WIDTH, HEIGHT, 15, 0.045);
+    this.add.rectangle(this.scale.width / 2, this.scale.height / 2, this.scale.width, this.scale.height, COLOR_HEX.bg);
+    drawDiagonalScanlines(this, this.scale.width, this.scale.height, 15, 0.045);
 
     addCornerLabel(this, 22, 22, "/ 04", "BREAKOUT", false);
-    createPulsingDot(this, WIDTH - 22 - 4, 22 + 6, 4, COLOR_HEX.accent);
+    createPulsingDot(this, this.scale.width - 22 - 4, 22 + 6, 4, COLOR_HEX.accent);
     this.add
-      .text(WIDTH - 38, 22, `CAMPANHA · FASE ${String(this.campaignPhase).padStart(2, "0")} / 05`, TEXT_PRESETS.monoLabel)
+      .text(this.scale.width - 38, 22, `CAMPANHA · FASE ${String(this.campaignPhase).padStart(2, "0")} / 05`, TEXT_PRESETS.monoLabel)
       .setOrigin(1, 0);
 
-    this.add.text(22, HEIGHT - 22, "GAMEDEV.04", TEXT_PRESETS.hint).setOrigin(0, 1);
-    this.add.text(WIDTH - 22, HEIGHT - 22, "BRICOLAGE · GEIST", TEXT_PRESETS.hint).setOrigin(1, 1);
+    this.add.text(22, this.scale.height - 22, "GAMEDEV.04", TEXT_PRESETS.hint).setOrigin(0, 1);
+    this.add.text(this.scale.width - 22, this.scale.height - 22, "BRICOLAGE · GEIST", TEXT_PRESETS.hint).setOrigin(1, 1);
 
     this.add
-      .text(WIDTH / 2, 120, "/ JORNADA GAMEDEV", { ...TEXT_PRESETS.monoLabel, color: COLORS.muted })
+      .text(this.scale.width / 2, 120, "/ JORNADA GAMEDEV", { ...TEXT_PRESETS.monoLabel, color: COLORS.muted })
       .setOrigin(0.5);
 
     this.add
-      .text(WIDTH / 2, 180, "BREAKOUT", TEXT_PRESETS.heroOutline)
+      .text(this.scale.width / 2, 180, "BREAKOUT", TEXT_PRESETS.heroOutline)
       .setOrigin(0.5)
       .setFontSize("88px");
 
     this.add
-      .text(WIDTH / 2, 244, "quebre todos os tijolos · não deixe a bola cair", TEXT_PRESETS.body)
+      .text(this.scale.width / 2, 244, "quebre todos os tijolos · não deixe a bola cair", TEXT_PRESETS.body)
       .setOrigin(0.5);
 
     OPTIONS.forEach((opt, i) => {
       const y = 330 + i * 64;
       const labelText = this.add
-        .text(WIDTH / 2, y, opt.label, { ...TEXT_PRESETS.bodyFg, fontSize: "22px" })
+        .text(this.scale.width / 2, y, opt.label, { ...TEXT_PRESETS.bodyFg, fontSize: "22px" })
         .setOrigin(0.5);
       this.optionTexts.push(labelText);
 
       const descText = this.add
-        .text(WIDTH / 2, y + 22, opt.description, { ...TEXT_PRESETS.hint, color: COLORS.muted })
+        .text(this.scale.width / 2, y + 22, opt.description, { ...TEXT_PRESETS.hint, color: COLORS.muted })
         .setOrigin(0.5);
       this.optionDescTexts.push(descText);
 
-      const hitArea = this.add.rectangle(WIDTH / 2, y + 11, 600, 56, 0, 0).setInteractive({ useHandCursor: true });
+      const hitArea = this.add.rectangle(this.scale.width / 2, y + 11, 600, 56, 0, 0).setInteractive({ useHandCursor: true });
       hitArea.on("pointerover", () => { this.selectedIndex = i; this.refreshHighlight(); });
       hitArea.on("pointerdown", () => { this.selectedIndex = i; this.refreshHighlight(); this.startSelected(); });
     });
 
     this.add
-      .text(WIDTH / 2, HEIGHT - 56, isTouchDevice()
+      .text(this.scale.width / 2, this.scale.height - 56, isTouchDevice()
         ? "TOQUE UMA OPÇÃO PRA JOGAR"
         : "↑ ↓ ESCOLHER  ·  ENTER JOGAR  ·  K SCREENSHOT", TEXT_PRESETS.hint)
       .setOrigin(0.5);

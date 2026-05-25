@@ -1,6 +1,6 @@
 import Phaser from "phaser";
 import { COLORS, COLOR_HEX, TEXT_PRESETS } from "../theme";
-import { drawDiagonalScanlines, createPulsingDot, addCornerLabel } from "../ui";
+import { drawDiagonalScanlines, createPulsingDot, addCornerLabel, setupResponsiveCameras } from "../ui";
 import { takeScreenshot } from "../screenshot";
 import { playTone } from "../audio";
 import { isTouchDevice } from "../input";
@@ -125,6 +125,12 @@ export class BreakoutScene extends Phaser.Scene {
   private particles!: Phaser.GameObjects.Particles.ParticleEmitter;
 
   private state: GameState = "ready";
+
+  // Dual camera helpers
+  private _registerWorld!: (obj: Phaser.GameObjects.GameObject) => void;
+  private _registerUi!: (obj: Phaser.GameObjects.GameObject) => void;
+  private _worldPoint!: (vx: number, vy: number) => { x: number; y: number };
+  private _onCamResize!: (cb: () => void) => void;
   private lives = STARTING_LIVES;
   private score = 0;
   private brickCount = 0;
@@ -176,8 +182,14 @@ export class BreakoutScene extends Phaser.Scene {
   }
 
   create() {
-    this.add.rectangle(WIDTH / 2, HEIGHT / 2, WIDTH, HEIGHT, COLOR_HEX.bg);
-    drawDiagonalScanlines(this, WIDTH, HEIGHT, 18, 0.04);
+    const { registerWorld, registerUi, worldPoint, onResize: onCamResize } = setupResponsiveCameras(this, WIDTH, HEIGHT);
+    this._registerWorld = registerWorld;
+    this._registerUi = registerUi;
+    this._worldPoint = worldPoint;
+    this._onCamResize = onCamResize;
+
+    const bg = this.add.rectangle(WIDTH / 2, HEIGHT / 2, WIDTH, HEIGHT, COLOR_HEX.bg); registerWorld(bg);
+    const scanlines = drawDiagonalScanlines(this, WIDTH, HEIGHT, 18, 0.04); registerWorld(scanlines);
 
     this.particles = this.add.particles(0, 0, "particle", {
       speed: { min: 60, max: 180 },
@@ -189,6 +201,8 @@ export class BreakoutScene extends Phaser.Scene {
     });
 
     this.paddle = this.add.rectangle(WIDTH / 2, PADDLE_Y, PADDLE_W, PADDLE_H, COLOR_HEX.fg);
+    this._registerWorld(this.paddle);
+    this._registerWorld(this.particles);
     this.physics.add.existing(this.paddle);
     const paddleBody = this.paddle.body as Phaser.Physics.Arcade.Body;
     paddleBody.setImmovable(true);
@@ -202,7 +216,7 @@ export class BreakoutScene extends Phaser.Scene {
     });
 
     // Trail da bola (queue de posições passadas, desenhado em update)
-    this.trailGraphics = this.add.graphics();
+    this.trailGraphics = this.add.graphics(); this._registerWorld(this.trailGraphics);
 
     this.physics.world.setBounds(0, 0, WIDTH, HEIGHT);
     // Canonical Phaser: world bounces nos 3 lados, bottom aberto (bola cai).
@@ -257,8 +271,10 @@ export class BreakoutScene extends Phaser.Scene {
   }
 
   private movePaddleToPointer(targetX: number) {
+    // targetX vem em coords do viewport — converte pra world coords
+    const world = this._worldPoint(targetX, 0);
     const halfW = this.paddle.width / 2;
-    this.paddle.x = Phaser.Math.Clamp(targetX, halfW, WIDTH - halfW);
+    this.paddle.x = Phaser.Math.Clamp(world.x, halfW, WIDTH - halfW);
     (this.paddle.body as Phaser.Physics.Arcade.Body).updateFromGameObject();
   }
 
@@ -444,6 +460,7 @@ export class BreakoutScene extends Phaser.Scene {
         const brick = this.add.rectangle(x, y, BRICK_W, BRICK_H, this.brickFillColor(def.hp), 1);
         brick.setStrokeStyle(1, this.brickStrokeColor(def.hp), 1);
         this.bricks.add(brick);
+        this._registerWorld(brick);
 
         brick.setData("hp", def.hp);
         brick.setData("indestructible", indestructible);
@@ -628,6 +645,7 @@ export class BreakoutScene extends Phaser.Scene {
   // com pequeno scale up. Dá sensação de "impacto" mesmo após destroy().
   private spawnBrickGhost(x: number, y: number, width: number, height: number) {
     const ghost = this.add.rectangle(x, y, width, height, COLOR_HEX.fg, 0.9);
+    this._registerWorld(ghost);
     this.tweens.add({
       targets: ghost,
       alpha: 0,
@@ -662,6 +680,7 @@ export class BreakoutScene extends Phaser.Scene {
     const color = COLOR_HEX.bgSoft;
 
     const container = this.add.rectangle(x, y, POWERUP_W, POWERUP_H, color, 1);
+    this._registerWorld(container);
     container.setStrokeStyle(1, COLOR_HEX.fg, 1);
     this.physics.add.existing(container);
     const body = container.body as Phaser.Physics.Arcade.Body;
@@ -675,6 +694,7 @@ export class BreakoutScene extends Phaser.Scene {
       fontSize: "12px",
       color: COLORS.fg,
     }).setOrigin(0.5);
+    this._registerWorld(text);
 
     // sincroniza letra com container
     const sync = () => {
@@ -735,6 +755,7 @@ export class BreakoutScene extends Phaser.Scene {
     if (!existing) return;
     for (let i = 0; i < count; i++) {
       const extra = this.add.rectangle(existing.x, existing.y, BALL_SIZE, BALL_SIZE, COLOR_HEX.accent);
+      this._registerWorld(extra);
       this.physics.add.existing(extra);
       const body = extra.body as Phaser.Physics.Arcade.Body;
       body.setBounce(1, 1);
@@ -839,24 +860,46 @@ export class BreakoutScene extends Phaser.Scene {
   // ---------- chrome ----------
 
   private drawChrome() {
-    addCornerLabel(this, 22, 22, "/ 04", "BREAKOUT", false);
-    createPulsingDot(this, WIDTH - 22 - 4, 22 + 6, 4, COLOR_HEX.accent);
-    this.metaLabel = this.add
-      .text(WIDTH - 38, 22, "", TEXT_PRESETS.monoLabel)
-      .setOrigin(1, 0);
+    const W = this.scale.width;
+    const H = this.scale.height;
+    const labels = addCornerLabel(this, 22, 22, "/ 04", "BREAKOUT", false);
+    if (labels.accentText) this._registerUi(labels.accentText);
+    this._registerUi(labels.mainText);
 
-    this.scoreText = this.add
-      .text(WIDTH / 2, 22, "", { ...TEXT_PRESETS.monoLabelFg, fontSize: "16px" })
-      .setOrigin(0.5, 0);
+    const dot = createPulsingDot(this, W - 22 - 4, 22 + 6, 4, COLOR_HEX.accent);
+    this._registerUi(dot.dot); this._registerUi(dot.glow);
 
-    this.livesText = this.add
-      .text(WIDTH / 2, 44, "", TEXT_PRESETS.monoLabel)
-      .setOrigin(0.5, 0);
+    this.metaLabel = this.add.text(W - 38, 22, "", TEXT_PRESETS.monoLabel).setOrigin(1, 0);
+    this._registerUi(this.metaLabel);
 
-    this.add.text(22, HEIGHT - 22, this.bottomLeftChrome(), TEXT_PRESETS.hint).setOrigin(0, 1);
-    this.add.text(WIDTH - 22, HEIGHT - 22, isTouchDevice()
+    this.scoreText = this.add.text(W / 2, 22, "", { ...TEXT_PRESETS.monoLabelFg, fontSize: "16px" }).setOrigin(0.5, 0);
+    this._registerUi(this.scoreText);
+
+    this.livesText = this.add.text(W / 2, 44, "", TEXT_PRESETS.monoLabel).setOrigin(0.5, 0);
+    this._registerUi(this.livesText);
+
+    const bottomLeft = this.add.text(22, H - 22, this.bottomLeftChrome(), TEXT_PRESETS.hint).setOrigin(0, 1);
+    this._registerUi(bottomLeft);
+    const bottomRight = this.add.text(W - 22, H - 22, isTouchDevice()
       ? "ARRASTE PRA MOVER · TOQUE PRA LANÇAR"
       : "← → · ESPAÇO · P PAUSAR · ESC MENU · K", TEXT_PRESETS.hint).setOrigin(1, 1);
+    this._registerUi(bottomRight);
+
+    this._onCamResize(() => {
+      const nW = this.scale.width;
+      const nH = this.scale.height;
+      dot.dot.setPosition(nW - 22 - 4, 22 + 6);
+      dot.glow.setPosition(nW - 22 - 4, 22 + 6);
+      this.metaLabel.setPosition(nW - 38, 22);
+      this.scoreText.setPosition(nW / 2, 22);
+      this.livesText.setPosition(nW / 2, 44);
+      bottomLeft.setPosition(22, nH - 22);
+      bottomRight.setPosition(nW - 22, nH - 22);
+      this.overlayBg.setPosition(nW / 2, nH / 2).setSize(nW, nH);
+      this.overlayTitle.setPosition(nW / 2, nH / 2 - 70);
+      this.overlaySubtitle.setPosition(nW / 2, nH / 2 + 6);
+      this.overlayHint.setPosition(nW / 2, nH / 2 + 56);
+    });
 
     this.refreshChrome();
   }
@@ -879,17 +922,16 @@ export class BreakoutScene extends Phaser.Scene {
   // ---------- overlay ----------
 
   private drawOverlay() {
-    this.overlayBg = this.add.rectangle(WIDTH / 2, HEIGHT / 2, WIDTH, HEIGHT, COLOR_HEX.bg, 0.82);
-    this.overlayTitle = this.add
-      .text(WIDTH / 2, HEIGHT / 2 - 70, "", TEXT_PRESETS.heroOutline)
-      .setOrigin(0.5)
-      .setFontSize("76px");
-    this.overlaySubtitle = this.add
-      .text(WIDTH / 2, HEIGHT / 2 + 6, "", TEXT_PRESETS.body)
-      .setOrigin(0.5);
-    this.overlayHint = this.add
-      .text(WIDTH / 2, HEIGHT / 2 + 56, "", TEXT_PRESETS.hint)
-      .setOrigin(0.5);
+    const W = this.scale.width;
+    const H = this.scale.height;
+    this.overlayBg = this.add.rectangle(W / 2, H / 2, W, H, COLOR_HEX.bg, 0.82);
+    this._registerUi(this.overlayBg);
+    this.overlayTitle = this.add.text(W / 2, H / 2 - 70, "", TEXT_PRESETS.heroOutline).setOrigin(0.5).setFontSize("76px");
+    this._registerUi(this.overlayTitle);
+    this.overlaySubtitle = this.add.text(W / 2, H / 2 + 6, "", TEXT_PRESETS.body).setOrigin(0.5);
+    this._registerUi(this.overlaySubtitle);
+    this.overlayHint = this.add.text(W / 2, H / 2 + 56, "", TEXT_PRESETS.hint).setOrigin(0.5);
+    this._registerUi(this.overlayHint);
   }
 
   private showReadyOverlay() {

@@ -74,3 +74,116 @@ export function addCornerLabel(
 export function styleHelpers() {
   return { COLORS, COLOR_HEX, TEXT_PRESETS };
 }
+
+// Dual-camera responsive: main camera renderiza GAMEPLAY com zoom pra caber
+// no viewport (mantém coords lógicas 800×600); UI camera renderiza CHROME em
+// coords reais do viewport. Resolve "true mobile feel" sem refatorar lógica
+// do jogo nem container scaling (que quebra com Phaser Arcade physics).
+//
+// Uso:
+//   const { uiCam, registerWorld, registerUi, worldPoint, onResize } =
+//     setupResponsiveCameras(this, 800, 600);
+//   const ball = this.add.rectangle(400, 300, ...); registerWorld(ball);
+//   const score = this.add.text(this.scale.width - 22, 22, ...); registerUi(score);
+//   onResize(() => score.setPosition(this.scale.width - 22, 22));
+export function setupResponsiveCameras(
+  scene: Phaser.Scene,
+  logicalWidth: number,
+  logicalHeight: number,
+): {
+  uiCam: Phaser.Cameras.Scene2D.Camera;
+  registerWorld: (obj: Phaser.GameObjects.GameObject) => void;
+  registerUi: (obj: Phaser.GameObjects.GameObject) => void;
+  worldPoint: (vx: number, vy: number) => { x: number; y: number };
+  onResize: (cb: () => void) => void;
+} {
+  const main = scene.cameras.main;
+  const resizeCallbacks: Array<() => void> = [];
+
+  const updateZoom = () => {
+    const W = scene.scale.width;
+    const H = scene.scale.height;
+    const zoom = Math.min(W / logicalWidth, H / logicalHeight);
+    main.setZoom(zoom);
+    main.centerOn(logicalWidth / 2, logicalHeight / 2);
+  };
+  updateZoom();
+
+  const uiCam = scene.cameras.add(0, 0, scene.scale.width, scene.scale.height);
+  uiCam.setScroll(0, 0);
+  uiCam.setZoom(1);
+
+  const registerWorld = (obj: Phaser.GameObjects.GameObject) => {
+    uiCam.ignore(obj);
+  };
+  const registerUi = (obj: Phaser.GameObjects.GameObject) => {
+    main.ignore(obj);
+  };
+
+  const onResize = (cb: () => void) => { resizeCallbacks.push(cb); };
+
+  const handleResize = () => {
+    updateZoom();
+    uiCam.setSize(scene.scale.width, scene.scale.height);
+    for (const cb of resizeCallbacks) cb();
+  };
+  scene.scale.on("resize", handleResize);
+  scene.events.once("shutdown", () => scene.scale.off("resize", handleResize));
+
+  const worldPoint = (vx: number, vy: number) => {
+    const W = scene.scale.width;
+    const H = scene.scale.height;
+    const zoom = main.zoom;
+    return {
+      x: logicalWidth / 2 + (vx - W / 2) / zoom,
+      y: logicalHeight / 2 + (vy - H / 2) / zoom,
+    };
+  };
+
+  return { uiCam, registerWorld, registerUi, worldPoint, onResize };
+}
+
+// Cria um container "playfield" que escala+centraliza um conteúdo de tamanho
+// lógico fixo (ex.: 800×600) pra caber no viewport real (Scale.RESIZE).
+// Use pra jogos com gameplay em grid/coordenadas fixas que precisa adaptar a
+// qualquer tela mantendo a lógica intacta.
+export function makeResponsivePlayfield(
+  scene: Phaser.Scene,
+  logicalWidth: number,
+  logicalHeight: number,
+  options: { topMargin?: number; bottomMargin?: number } = {},
+): {
+  container: Phaser.GameObjects.Container;
+  localPoint: (worldX: number, worldY: number) => { x: number; y: number };
+  onResize: (cb: () => void) => void;
+} {
+  const topMargin = options.topMargin ?? 0;
+  const bottomMargin = options.bottomMargin ?? 0;
+  const container = scene.add.container(0, 0);
+  const resizeCallbacks: Array<() => void> = [];
+
+  const reposition = () => {
+    const W = scene.scale.width;
+    const H = scene.scale.height - topMargin - bottomMargin;
+    const scale = Math.min(W / logicalWidth, H / logicalHeight);
+    container.setScale(scale);
+    container.setPosition(
+      (W - logicalWidth * scale) / 2,
+      topMargin + (H - logicalHeight * scale) / 2,
+    );
+    for (const cb of resizeCallbacks) cb();
+  };
+  reposition();
+  scene.scale.on("resize", reposition);
+  scene.events.once("shutdown", () => scene.scale.off("resize", reposition));
+
+  // Converte coord do viewport (pointer.x/y) pra coord local do container.
+  const localPoint = (worldX: number, worldY: number) => ({
+    x: (worldX - container.x) / container.scaleX,
+    y: (worldY - container.y) / container.scaleY,
+  });
+
+  const onResize = (cb: () => void) => { resizeCallbacks.push(cb); };
+
+  return { container, localPoint, onResize };
+}
